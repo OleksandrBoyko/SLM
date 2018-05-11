@@ -1,0 +1,8 @@
+# Dirs
+codegentemp/
+CortexM0/
+Generated_Source/
+Export/
+
+#Files
+*.log
