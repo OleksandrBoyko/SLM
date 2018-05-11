@@ -6,3 +6,10 @@ Export/
 
 #Files
 *.log
+*.html
+cyapicallbacks.h
+*.svd
+*.rpt
+*.cyprj.*
+*.cyfit
+*.cycdx
