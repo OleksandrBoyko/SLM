@@ -1,6 +1,6 @@
 /* ========================================
  *
- * Copyright YOUR COMPANY, THE YEAR
+ * Copyright Dish Ukraine, 2018
  * All Rights Reserved
  * UNPUBLISHED, LICENSED SOFTWARE.
  *
@@ -28,6 +28,7 @@ typedef struct _connection_handle
 static CONNECTION_HANDLE btConHandle;
 static uint8_t notifyBattery = FALSE;
 static uint8_t notifySignalStrength = FALSE;
+static uint8_t startScan = FALSE;
 
 
 static void ResetIsrHandler( void );
@@ -126,7 +127,7 @@ static void BLE_Stack_Handler( uint32 eventCode, void *eventParam )
             uint16_t updateTimeout = 0;
 
             DBG("Timeout period: %d", InterruptTimer_ReadPeriod());
-            GetData2Bytes( CYBLE_TUNERCONFIGURATION_UPDATETIMEOUT_CHAR_HANDLE, &updateTimeout );
+            GetData2Bytes( CYBLE_TUNERCONFIGURATION_UPDATEINTERVAL_CHAR_HANDLE, &updateTimeout );
             InterruptTimer_Start();
             InterruptTimer_WritePeriod( updateTimeout );
             DBG("Timeout period: %d", InterruptTimer_ReadPeriod());
@@ -225,15 +226,24 @@ static void BLE_Stack_Handler( uint32 eventCode, void *eventParam )
                         CyBle_GattsWriteAttributeValue( &wrReq->handleValPair, 0, &btConHandle.handle, CYBLE_GATT_DB_LOCALLY_INITIATED );
                         DBG("Demodulator BW: %d", wrReq->handleValPair.value.val[0]);
                     }
-                    else if ( CYBLE_TUNERCONFIGURATION_UPDATETIMEOUT_CHAR_HANDLE == attr )
+                    else if ( CYBLE_TUNERCONFIGURATION_UPDATEINTERVAL_CHAR_HANDLE == attr )
                     {
-                        DBG("Update timeout: %d ms", wrReq->handleValPair.value.val[1]<<8|wrReq->handleValPair.value.val[0]);
+                        DBG("Update interval: %d", wrReq->handleValPair.value.val[1]<<8|wrReq->handleValPair.value.val[0]);
+                        CyBle_GattsWriteAttributeValue( &wrReq->handleValPair, 0, &btConHandle.handle, CYBLE_GATT_DB_LOCALLY_INITIATED );
                         InterruptTimer_WriteCounter(0);
                         InterruptTimer_WritePeriod( wrReq->handleValPair.value.val[1]<<8|wrReq->handleValPair.value.val[0] );
                         InterruptTimer_Stop();
                         InterruptTimer_Start();
-                        
-                        DBG("Timeout period: %d", InterruptTimer_ReadPeriod());
+                    }
+                    else if ( CYBLE_TUNERCONFIGURATION_STARTSCAN_CHAR_HANDLE == attr )
+                    {
+                        DBG("StartScan: %d", wrReq->handleValPair.value.val[0]);
+                        startScan = wrReq->handleValPair.value.val[0];
+                        CyBle_GattsWriteAttributeValue( &wrReq->handleValPair, 0, &btConHandle.handle, CYBLE_GATT_DB_LOCALLY_INITIATED );
+                        if( TRUE == startScan )
+                        {
+                            TimeoutIsr_SetPending();
+                        }
                     }
                     else if (( CYBLE_TUNERINFORMATION_LOCK_STATUS_CLIENT_CHARACTERISTIC_CONFIGURATION_DESC_HANDLE == attr ) 
                             || ( CYBLE_TUNERINFORMATION_SIGNALSTRENGTH_CLIENT_CHARACTERISTIC_CONFIGURATION_DESC_HANDLE == attr )
@@ -302,14 +312,13 @@ static void BLE_Stack_Handler( uint32 eventCode, void *eventParam )
         case CYBLE_EVT_GATTS_READ_CHAR_VAL_ACCESS_REQ:
         {
             CYBLE_GATTS_CHAR_VAL_READ_REQ_T *readReq = NULL;
-            
+
             readReq = (CYBLE_GATTS_CHAR_VAL_READ_REQ_T *)eventParam;
             if( NULL == readReq )
             {
                 ERR("Invalid parameter");
-                break;
             }
-            
+
             DBG("GATT error code: 0x%x",readReq->gattErrorCode);
             break;
         }
@@ -318,16 +327,23 @@ static void BLE_Stack_Handler( uint32 eventCode, void *eventParam )
         case CYBLE_EVT_GAP_AUTH_FAILED:
         {
             CYBLE_GAP_AUTH_FAILED_REASON_T gapAuthFailure;
-            
+
             gapAuthFailure = *(CYBLE_GAP_AUTH_FAILED_REASON_T*)eventParam;
             ERR("GAP authentication failure: 0x%x", gapAuthFailure);
             break;
         }
 
+        case CYBLE_EVT_GAP_ENCRYPT_CHANGE:
+        {
+            uint8_t encryption = ((uint8_t*)eventParam)[0];
+            DBG("Encryption changed: %s",(0 == encryption)?"OFF":"ON");
+            break;
+        }
+
         case CYBLE_EVT_GAP_AUTH_REQ:
         {
-            ble_result = CyBle_GappAuthReqReply( btConHandle.handle.bdHandle, (CYBLE_GAP_AUTH_INFO_T*)eventParam );
-            DBG("retVal: %d", ble_result);
+            /*ble_result = CyBle_GappAuthReqReply( btConHandle.handle.bdHandle, (CYBLE_GAP_AUTH_INFO_T*)eventParam );
+            DBG("retVal: %d", ble_result);*/
             break;
         }
 
@@ -359,15 +375,22 @@ static CY_ISR( TimeoutIsr_Handler )
 {
     uint8_t signalStrength = 0;
     uint8_t batteryLevel = 0;
-    
+
     DBG("TimeoutIsr fired");
 
     TimeoutIsr_ClearPending();
     InterruptTimer_Stop();
     InterruptTimer_Start();
-    
+
     if( TRUE == btConHandle.connected )
     {
+        if( TRUE == startScan )
+        {
+            /* TODO: Make fire of tune functionality */
+            startScan = FALSE;
+            DBG("Fire tuner routines");
+        }
+
         GetData1Byte( CYBLE_TUNERINFORMATION_SIGNALSTRENGTH_CHAR_HANDLE, &signalStrength );
         signalStrength++;
         SetData1Byte( CYBLE_TUNERINFORMATION_SIGNALSTRENGTH_CHAR_HANDLE, notifySignalStrength, signalStrength );
@@ -408,7 +431,7 @@ static uint8 GetUint16Limits( uint16_t limitHandle, uint16_t *max, uint16_t *min
             break;
         }
         
-        for( ; loop <= limitsLen * 2; loop-- )
+        for( ; loop < limitsLen * 2; loop-- )
         {
             if( loop >= limitsLen )
             {
